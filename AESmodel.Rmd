@@ -1,0 +1,507 @@
+---
+title: "AESmodel"
+author: "Pariwat Thamma"
+date: "2024-11-27"
+output:
+  ioslides_presentation: default
+  beamer_presentation:
+    keep_tex: yes
+    latex_engine: xelatex
+header-includes: \usetheme{Warsaw}
+---
+#Library
+```{r}
+library(tinytex)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tidytext)
+library(textrecipes)
+library(tidyverse)
+library(tidymodels)
+library(recipes)
+library(workflows)
+library(workflowsets)
+library(vip)
+library(stringr)
+library(forcats)
+library(caret)
+library(discrim)
+library(naivebayes)
+library(kernlab)
+library(themis)
+```
+
+# AES Model Item5
+```{r}
+dat5 <- read_excel("/Users/pariwatthamma/Downloads/item.xlsx",sheet = "item5")
+
+dat5
+glimpse(dat5)
+dat5$pans5 <- as.factor(dat5$pans5)
+dat5$prea5 <- as.factor(dat5$prea5)
+dat5$pevi5 <- as.factor(dat5$pevi5)
+dat5$point5 <- as.factor(dat5$point5)
+#ข้อมูลที่เก็บมาประกอบด้วย col text5 ans5 pans5 rea5 prea5 evi5 pevi5
+```
+
+## data preproc item5
+```{r}
+#model
+set.seed(123)
+split_5<-initial_split(dat5, strata = point5)
+train_5<-training(split_5)
+test_5<-testing(split_5)
+
+#answerI5
+set.seed(123)
+split_ans5<-initial_split(dat5, strata = pans5)
+train_ans5<-training(split_ans5)
+test_ans5<-testing(split_ans5)
+train_rec_ans5 <- recipe(pans5~ans5, data=train_ans5) %>%
+  step_tokenize(ans5) %>% 
+  step_tokenfilter(ans5) %>%
+  step_tfidf(ans5) %>% 
+  step_normalize(all_numeric_predictors()) 
+
+#reasonI5
+set.seed(123)
+split_rea5<-initial_split(dat5, strata = prea5)
+train_rea5<-training(split_rea5)
+test_rea5<-testing(split_rea5)
+train_rec_rea5 <- recipe(prea5~rea5, data=train_rea5) %>%
+  step_tokenize(rea5) %>% 
+  step_tokenfilter(rea5) %>%
+  step_tfidf(rea5) %>% 
+  step_normalize(all_numeric_predictors()) 
+
+#evidenceI5
+set.seed(123)
+split_evi5<-initial_split(dat5, strata = pevi5)
+train_evi5<-training(split_evi5)
+test_evi5<-testing(split_evi5)
+train_rec_evi5 <- recipe(pevi5~evi5, data=train_evi5) %>%
+  step_tokenize(evi5) %>% 
+  step_tokenfilter(evi5) %>%
+  step_tfidf(evi5) %>% 
+  step_normalize(all_numeric_predictors()) 
+
+```
+
+## model spec item 5
+```{r}
+# model specification 1
+multi_spec <- multinom_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+# model specification 2
+rf_spec <- rand_forest(mtry = tune(),
+                       trees=200,
+                       min_n=tune()) %>%
+  set_engine("ranger",importance = "permutation") %>%
+  set_mode("classification")
+# KKNN Specification
+kknn_spec <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+# Neural Network Specification
+nn_spec <- mlp(hidden_units = tune(), penalty = tune(), epochs = tune()) %>%
+  set_engine("nnet") %>%
+  set_mode("classification")
+
+# Naive Bayes Specification
+nb_spec <- naive_Bayes() %>%
+  set_engine("naivebayes") %>%
+  set_mode("classification")
+
+# Support Vector Machine Specification
+svm_spec <- svm_rbf(cost = tune(), rbf_sigma = tune()) %>%
+  set_engine("kernlab") %>%
+  set_mode("classification")
+
+# XGBoost Specification
+xgb_spec <- boost_tree(trees = 200, tree_depth = tune(), learn_rate = tune(), loss_reduction = tune(), sample_size = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# create workflowset
+wf_set_ans5 <- workflow_set(
+  preproc = list(train_rec_ans5),
+  models = list(
+    multi_spec ,
+    rf_spec ,
+    kknn_spec ,
+    nn_spec ,
+    nb_spec ,
+    svm_spec ,
+    xgb_spec 
+  )
+)
+
+wf_set_rea5 <- workflow_set(
+  preproc = list(train_rec_rea5),
+  models = list(
+    multi_spec ,
+    rf_spec ,
+    kknn_spec ,
+    nn_spec ,
+    nb_spec ,
+    svm_spec ,
+    xgb_spec 
+  )
+)
+
+wf_set_evi5 <- workflow_set(
+  preproc = list(train_rec_evi5),
+  models = list(
+    multi_spec ,
+    rf_spec ,
+    kknn_spec ,
+    nn_spec ,
+    nb_spec ,
+    svm_spec ,
+    xgb_spec 
+  )
+)
+```
+
+### answer model 5
+```{r}
+c <- parallel::makeCluster(6)
+doParallel::registerDoParallel(c)
+set.seed(321)
+folds_ans5 <- vfold_cv(train_ans5, v = 10, repeats = 3, strata = ans5)
+result_ans5 <- workflow_map(
+  wf_set_ans5,
+  resamples = folds_ans5,
+  grid = 50,
+  control = control_grid(save_pred = T),
+  metrics = metric_set(roc_auc,sens,spec)
+)
+autoplot(result_ans5)
+
+result_ans5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+
+best_ans5 <-result_ans5 %>% 
+  extract_workflow_set_result(id = "recipe_multinom_reg") %>%
+  show_best(n=1, metric = "roc_auc")
+
+best_ans5
+
+mul_reg_ans5 <- wf_set_ans5 %>%
+  extract_workflow(id = "recipe_multinom_reg")
+
+final_mul_ans5 <- mul_reg_ans5 %>%
+  finalize_workflow(best_ans5)
+final_mul_ans5
+
+mul_lastfit_ans5 <- final_mul_ans5 %>%
+  last_fit(split_ans5, metrics=metric_set(roc_auc, sens,spec))
+
+mul_lastfit_ans5 %>%
+  collect_metrics()
+
+```
+
+### reason model 5
+```{r}
+c <- parallel::makeCluster(6)
+doParallel::registerDoParallel(c)
+set.seed(321)
+folds_rea5 <- vfold_cv(train_rea5, v = 10, repeats = 3, strata = rea5)
+result_rea5 <- workflow_map(
+  wf_set_rea5,
+  resamples = folds_rea5,
+  grid = 50,
+  control = control_grid(save_pred = T),
+  metrics = metric_set(roc_auc,sens,spec)
+)
+autoplot(result_rea5)
+
+result_rea5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+
+best_rea5 <-result_rea5 %>% 
+  extract_workflow_set_result(id = "recipe_svm_rbf") %>%
+  show_best(n=1, metric = "roc_auc")
+
+best_rea5
+
+svm_wf_rea5 <- wf_set_rea5 %>%
+  extract_workflow(id = "recipe_svm_rbf")
+
+final_svm_rea5 <- svm_wf_rea5 %>%
+  finalize_workflow(best_rea5)
+final_svm_rea5
+
+svm_lastfit_rea5 <- final_svm_rea5 %>%
+  last_fit(split_rea5, metrics=metric_set(roc_auc, sens,spec))
+
+svm_lastfit_rea5 %>%
+  collect_metrics()
+```
+
+### evidence model 5
+```{r}
+c <- parallel::makeCluster(6)
+doParallel::registerDoParallel(c)
+set.seed(321)
+folds_evi5 <- vfold_cv(train_evi5, v = 10, repeats = 3, strata = evi5)
+result_evi5 <- workflow_map(
+  wf_set_evi5,
+  resamples = folds_evi5,
+  grid = 50,
+  control = control_grid(save_pred = T),
+  metrics = metric_set(roc_auc,sens,spec)
+)
+
+autoplot(result_evi5)
+
+result_evi5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+
+
+best_evi5 <-result_evi5 %>% 
+  extract_workflow_set_result(id = "recipe_svm_rbf") %>%
+  show_best(n=1, metric = "roc_auc")
+
+best_evi5
+
+svm_wf_evi5 <- wf_set_evi5 %>%
+  extract_workflow(id = "recipe_svm_rbf")
+
+final_svm_evi5 <- svm_wf_evi5 %>%
+  finalize_workflow(best_evi5)
+
+final_svm_evi5
+
+svm_lastfit_evi5 <- final_svm_evi5 %>%
+  last_fit(split_evi5, metrics=metric_set(roc_auc, sens,spec))
+
+svm_lastfit_evi5 %>%
+  collect_metrics()
+```
+
+## test model Item5
+```{r}
+#answer model item1
+autoplot(result_ans5)
+result_ans5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+best_ans5
+
+#reason model item5
+autoplot(result_rea5)
+result_rea5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+best_rea5
+
+#evidence model item5
+autoplot(result_evi5)
+result_evi5 %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+best_evi5
+
+#test full essay item5
+#ประกอบด้วย col text5 point5
+new_dat5 <- test_5 %>% select(text5,point5)
+glimpse(new_dat5)
+new_dat5$point5 <- as.numeric(new_dat5$point5)
+#predict score from answer model
+names(new_dat5)[1] <- "ans5"
+new_dat5_rec <- recipe(~ans5, data=new_dat5) %>%
+  step_tokenize(ans5) %>% 
+  step_tokenfilter(ans5) %>%
+  step_tfidf(ans5) %>% 
+  step_normalize(all_numeric_predictors()) 
+
+pred_ans5 <- mul_lastfit_ans5  %>%
+  extract_workflow() %>%
+  predict(new_data = new_dat5)
+
+pred_ans5
+
+#predict score from reason model
+names(new_dat5)[1] <- "rea5"
+new_dat5_rec <- recipe(~rea5, data=new_dat5) %>%
+  step_tokenize(rea5) %>% 
+  step_tokenfilter(rea5) %>%
+  step_tfidf(rea5) %>% 
+  step_normalize(all_numeric_predictors()) 
+pred_rea5 <- svm_lastfit_rea5  %>%
+  extract_workflow() %>%
+  predict(new_data = new_dat5)
+
+pred_rea5
+
+#predict score from evi model
+names(new_dat5)[1] <- "evi5"
+new_dat5_rec <- recipe(~evi5, data=new_dat5) %>%
+  step_tokenize(ans5) %>% 
+  step_tokenfilter(ans5) %>%
+  step_tfidf(ans5) %>% 
+  step_normalize(all_numeric_predictors())#
+pred_evi5 <- svm_lastfit_evi5 %>%
+  extract_workflow() %>%
+  predict(new_data = new_dat5)
+
+pred_evi5
+
+#ปรับ col ที่ทำนายเป็น pred_ans5 pred_rea5 pred_evi5
+names(pred_ans5)[1] <- "pred_ans5"
+names(pred_rea5)[1] <- "pred_rea5"
+names(pred_evi5)[1] <- "pred_evi5"
+
+#ปรับเป็น numeric
+pred_ans5$pred_ans5 <- as.numeric(pred_ans5$pred_ans5)
+pred_rea5$pred_rea5 <- as.numeric(pred_rea5$pred_rea5)
+pred_evi5$pred_evi5 <- as.numeric(pred_evi5$pred_evi5)
+
+full_essay5 <- bind_cols(new_dat5,pred_ans5,pred_rea5,pred_evi5)
+names(full_essay5)[1] <- "text5"
+full_essay5
+#sum score from 3 models
+full_essay5 <- full_essay5 %>% mutate(
+  predict_point5 =pred_ans5 + pred_rea5 + pred_evi5)
+
+full_essay5 <- full_essay5 %>% select(text5,point5,predict_point5)
+
+glimpse(full_essay5)
+full_essay5
+#confusion matrix
+
+full_essay5_point <-  factor(full_essay5$point5)
+full_essay5_pred <- factor(full_essay5$predict_point5)
+
+conf_ma5 <- confusionMatrix(data=full_essay5_pred, reference = full_essay5_point)
+conf_ma5
+
+conf_ma5_table <- as.data.frame(conf_ma5$table)
+colnames(conf_ma5_table) <- c("Reference", "Prediction", "Count")
+# สร้าง heatmap
+heatmap_ma5 <- ggplot(data = conf_ma5_table, aes(x = Reference, y = Prediction, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "white", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Heatmap for model5",
+       x = "Actual Values",
+       y = "Predicted Values",
+       fill = "Count")
+
+heatmap_ma5
+```
+###test answer model5
+```{r}
+new_test_ans5 <- test_ans5
+pred_ans5 <- mul_lastfit_ans5  %>%
+  extract_workflow() %>%
+  predict(new_data = new_test_ans5)
+pred_ans5
+names(pred_ans5)[1] <- "pred_ans5"
+
+new_test_ans5 <- bind_cols(test_ans5,pred_ans5)
+new_test_ans5 <- new_test_ans5 %>% select(ans5,pans5,pred_ans5)
+new_test_ans5
+test_ans5_point <-  factor(new_test_ans5$pans5)
+test_ans5_pred <- factor(new_test_ans5$pred_ans5)
+conf_ans5 <- confusionMatrix(data=test_ans5_pred, reference = test_ans5_point)
+conf_ans5
+
+conf_ans5_table <- as.data.frame(conf_ans5$table)
+colnames(conf_ans5_table) <- c("Reference", "Prediction", "Count")
+# สร้าง heatmap
+heatmap_ans5 <- ggplot(data = conf_ans5_table, aes(x = Reference, y = Prediction, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "white", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Heatmap for answer model5",
+       x = "Actual Values",
+       y = "Predicted Values",
+       fill = "Count")
+
+heatmap_ans5
+```
+
+###test reason model5
+```{r}
+new_test_rea5 <- test_rea5
+pred_rea5 <- svm_lastfit_rea5  %>%
+  extract_workflow() %>%
+  predict(new_data = new_test_rea5)
+pred_rea5
+names(pred_rea5)[1] <- "pred_rea5"
+
+new_test_rea5 <- bind_cols(new_test_rea5,pred_rea5)
+new_test_rea5 <- new_test_rea5 %>% select(rea5,prea5,pred_rea5)
+new_test_rea5
+test_rea5_point <-  factor(new_test_rea5$prea5)
+test_rea5_pred <- factor(new_test_rea5$pred_rea5)
+conf_rea5 <- confusionMatrix(data=test_rea5_pred, reference = test_rea5_point)
+conf_rea5
+
+conf_rea5_table <- as.data.frame(conf_rea5$table)
+colnames(conf_rea5_table) <- c("Reference", "Prediction", "Count")
+# สร้าง heatmap
+heatmap_rea5 <- ggplot(data = conf_rea5_table, aes(x = Reference, y = Prediction, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "white", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Heatmap for reason model5",
+       x = "Actual Values",
+       y = "Predicted Values",
+       fill = "Count")
+
+heatmap_rea5
+```
+
+###test evidence model5
+```{r}
+new_test_evi5 <- test_evi5
+pred_evi5 <- svm_lastfit_evi5  %>%
+  extract_workflow() %>%
+  predict(new_data = new_test_evi5)
+pred_evi5
+names(pred_evi5)[1] <- "pred_evi5"
+
+new_test_evi5 <- bind_cols(new_test_evi5,pred_evi5)
+new_test_evi5 <- new_test_evi5 %>% select(evi5,pevi5,pred_evi5)
+new_test_evi5
+test_evi5_point <-  factor(new_test_evi5$pevi5)
+test_evi5_pred <- factor(new_test_evi5$pred_evi5)
+conf_evi5 <- confusionMatrix(data=test_evi5_pred, reference = test_evi5_point)
+conf_evi5
+
+conf_evi5_table <- as.data.frame(conf_evi5$table)
+colnames(conf_evi5_table) <- c("Reference", "Prediction", "Count")
+# สร้าง heatmap
+heatmap_evi5 <- ggplot(data = conf_evi5_table, aes(x = Reference, y = Prediction, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "white", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Heatmap for evidence model5",
+       x = "Actual Values",
+       y = "Predicted Values",
+       fill = "Count")
+
+heatmap_evi5
+```
+
+
+
